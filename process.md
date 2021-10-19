@@ -27,7 +27,7 @@ parents and progeny for each F1 map, and once for the F2 map.
 > Fastq files for each individual are available for download under NCBI
 > BioProject accession no. **PRJNA771889**
 
-> Information for each family found in this repo
+> Information for each family found in a folder in this repo
 > [input/popmaps](https://github.com/therkildsen-lab/silverside-linkage-maps/tree/main/input/popmaps)
 
 Run *ustacks* on all samples with shell script `ustacks_wrap.sh`:  
