@@ -27,7 +27,8 @@ Because we have two F1 maps, we will manually run *Stacks* because we want to ha
 > Fastq files for each individual are available for download under NCBI BioProject accession no. **PRJNA771889**  
 
 
-> Information for each family found in *input -> popmaps*
+> Information for each family found in this repo [input/popmaps](https://github.com/therkildsen-lab/silverside-linkage-maps/tree/main/input/popmaps)
+
 
 Run *ustacks* on all samples with shell script `ustacks_wrap.sh`:  
 <details><summary>Show code</summary>
