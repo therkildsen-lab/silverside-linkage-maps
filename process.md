@@ -2,7 +2,7 @@
 ================
 
 Part 1: [*de novo* assembly in
-Stacks](https://github.com/therkildsen-lab/silverside-linkage-maps/blob/master/process.md#de-novo-analysis-in-stacks-2)  
+Stacks](https://github.com/therkildsen-lab/silverside-linkage-maps/blob/main/process.md#de-novo-assembly-in-stacks)  
 Part 2: [Map to the reference
 genome](https://github.com/therkildsen-lab/silverside-linkage-maps/blob/master/process.md#map-to-the-reference-genome)
 
