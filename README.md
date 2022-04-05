@@ -1,6 +1,6 @@
 # Silverside Linkage Maps
 
-## Data Analysis Pipeline for Akopyan et al. 2021
+## Data Analysis Pipeline
 
 ### 1. Data Processing
 
@@ -14,4 +14,7 @@
 
 
 
-### 3. Marey Map Filtering 
+### 3. Figures 
+
+
+#### [anchoring, filtering, and plotting](https://github.com/therkildsen-lab/silverside-linkage-maps/blob/main/marey.md)

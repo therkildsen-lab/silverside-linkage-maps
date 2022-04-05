@@ -1,0 +1,216 @@
+---
+title: "Linkage Maps Raw"
+output: github_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(knitr)
+library(rmarkdown)
+```
+
+### Format output for Marey maps  
+
+Read and tidy data
+<details><summary>Show code</summary>
+<p>
+```{r read, warning=FALSE, message=FALSE}
+
+#Read in genome coordinates of mapped RAD loci
+gpos <- read_tsv("input/locus_coordinates_v1.tsv") %>% separate(aln_pos, 
+                c("chr","phys"), ":", extra='drop') %>% select(-id_new) %>% mutate(id_old=as.numeric(id_old),chr=as.numeric(chr),phys=as.numeric(phys))
+
+JPraw <- read_tsv("input/all_JP.txt")
+
+JPg <- JPraw %>% left_join(gpos, by = c("CHR"="id_old"))
+
+Jnew <-  JPg %>% 
+  mutate(lgchr=recode(LG, "1"="9", "2"="3", "3"="10", "4"="4", "5"="1", "6"="6", "7"="5", "8"="7", "9"="12", "10"="8", "11"="14", "12"="22", "13"="11", "14"="15", "15"="2", "16"="17", "17"="13", "18"="19", "19"="16", "20"="21", "21"="20", "22"="18", "23"="23", "24"="24")) %>% 
+  mutate(lgchr=as.numeric(lgchr))
+
+femaletabG <- Jnew %>%  
+  group_by(lgchr) %>% 
+  summarise(length=max(FEMALE,na.rm = TRUE), markers=n())
+femaletabG
+
+nomissing <- Jnew %>% filter(!is.na(chr))
+nrow(Jnew)-nrow(nomissing)
+nrow(nomissing)
+
+onesnp <- nomissing %>% distinct(CHR, .keep_all = TRUE)
+nrow(nomissing)-nrow(onesnp)
+nrow(onesnp)
+
+nomismatch <- onesnp %>% filter(!(chr < 25 & lgchr!=chr))
+nrow(onesnp)-nrow(nomismatch)
+nrow(nomismatch)
+
+nrow(nomissing %>% filter(!(chr < 25 & lgchr!=chr)))
+
+cminput <- nomissing  %>% select(chr,phys,lgchr,FEMALE) %>% arrange(lgchr,FEMALE)
+
+scaffs <- read_tsv("newagp.txt") 
+
+inputcm <- scaffs %>% left_join(cminput, by = c("chr"="chr","lgchr"="lgchr")) %>% 
+  arrange(lgchr,FEMALE) 
+
+ggplot() +
+  geom_point(data=inputcm, aes(x=newstart/1e6, y=FEMALE), size=0.8, alpha=0.8) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "none",        
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~lgchr, scales="free", ncol=4)
+
+
+
+
+View(unique(inputcm$chr))
+
+
+splitData <- split(inputcm, cminput$lgchr)
+
+lapply(names(splitData), function(x){
+    write_tsv(splitData[[x]], path = paste(x, ".cm", sep = ""))
+    })
+
+
+
+newinput <- nomismatch  %>% select(chr,phys,lgchr,FEMALE) %>% arrange(chr,phys)
+write_tsv(newinput,"~/Downloads/newlepanch.txt")
+
+```
+
+
+```{r write, warning=FALSE, message=FALSE}
+
+JPanch <- read_tsv("~/Downloads/all_JP.txt",col_names = F,col_types = "nnnnncccc") 
+
+anchJPg <- JPanch %>% left_join(gpos, by = c("X2"="id_old")) %>% 
+  rename(CHR=chr, LG=X1, RAD=X2, POS=X3, MALE=X4, FEMALE=X5, PH=X7) 
+
+JPa <- anchJPg %>% filter(!is.na(CHR)) %>% distinct(RAD, .keep_all = TRUE) %>% 
+  mutate(LG=recode(LG, "1"="9", "2"="3", "3"="10", "4"="4", "5"="1", "6"="6", "7"="5", "8"="7", "9"="12", "10"="8", "11"="14", "12"="22", "13"="11", "14"="15", "15"="2", "16"="17", "17"="13", "18"="19", "19"="16", "20"="21", "21"="20", "22"="18", "23"="23", "24"="24")) 
+
+
+JPb <- JPa %>% mutate(LG=as.numeric(LG)) %>% filter(!(CHR < 25 & LG!=CHR)) %>% arrange(CHR,phys) %>% 
+mutate(FEMALE = round(FEMALE, 3),MALE = round(MALE, 3))
+
+anchJPinput <- JPb %>% select(LG,MALE,FEMALE,X6,PH,X8,X9) %>% 
+  mutate(X6=recode(X6, "0"="( 0 )")) 
+
+snps <- JPb %>% select(CHR,phys) 
+
+lainput <- JPa %>% select(CHR,phys,LG,FEMALE)
+
+write_delim(anchJPinput,"~/Downloads/lepanchinputz.txt",delim = " ", col_names = F)
+write_tsv(snps,"~/Downloads/chrposz.txt", col_names = F)
+
+write_tsv(lainput,"~/Downloads/lainput.txt", col_names = F)
+
+
+splitData <- split(lainput, lainput$LG)
+
+lapply(names(splitData), function(x){
+    write_tsv(splitData[[x]], path = paste(x, ".cm", sep = ""))
+    })
+
+
+
+
+```
+
+
+```{r plot, warning=FALSE, message=FALSE}
+GAP <- Jnew %>% 
+  distinct(lgchr, CHR, .keep_all = TRUE) %>% 
+  mutate(chr=as.numeric(chr)) %>% 
+  mutate(assembled = case_when(is.na(chr) ~ "unmapped", 
+                               chr < 25 ~ "og_scaffold", 
+                               chr > 24 & chr < 28 ~ "scaff2anch", 
+                               TRUE ~ "rest")) 
+
+
+# Set up a data structure for scale tick marks
+y <- seq(0, 200, by=10)
+maj_ticks <- data.frame(y)
+maj_ticks$x <- -0.5
+
+y <- y <- seq(5, 200, by=10)
+min_ticks <- data.frame(y)
+min_ticks$x <- -0.5
+
+# Plot linkage map with markers colored based on genome-mapping
+ggplot(GAP, aes(x=lgchr, y=FEMALE)) +
+  geom_path(aes(group=lgchr), size=10, lineend="round", col="black") +
+  geom_path(aes(group=lgchr), size=7, lineend="round", col="white") +
+  geom_rect(data=subset(GAP, assembled=="og_scaffold"), aes(xmin=lgchr-0.18, xmax=lgchr+0.18, ymin=FEMALE-0.2, ymax=FEMALE+0.2), fill="#000000") +
+  geom_rect(data=subset(GAP, assembled=="scaff2anch"), aes(xmin=lgchr-0.18, xmax=lgchr+0.18, ymin=FEMALE-0.2, ymax=FEMALE+0.2), fill="#ebab34") +
+  geom_rect(data=subset(GAP, assembled=="rest"), aes(xmin=lgchr-0.18, xmax=lgchr+0.18, ymin=FEMALE-0.2, ymax=FEMALE+0.2), fill="#00bbff") +
+  geom_rect(data=subset(GAP, assembled=="unmapped"), aes(xmin=lgchr-0.18, xmax=lgchr+0.18, ymin=FEMALE-0.2, ymax=FEMALE+0.2), fill="#b01212") +
+  annotate("text", x = -1, y = 100, size =5, label = "Genetic Distance (cM)", color="#000000", angle="90") +
+  annotate("text", x = 0.25, y = seq(0, 200, by=20), label = seq(0, 200, by=20), size=4, color="black") +
+  annotate("text", x = 1:24, y = -11, label = 1:24, size = 5, color="black", fontface="bold") +
+  geom_segment(data=maj_ticks, aes(x=x, y=y, xend=0, yend=y), color="black") +
+  geom_segment(data=min_ticks, aes(x=x, y=y, xend=-0.25, yend=y), color="black") +
+  geom_segment(x=-0.5, y=5, xend=-0.5, yend=-200.5, size=2, color="black") +
+  #facet_grid(.~lgchr) +
+  theme(line=element_blank(), rect=element_blank(), axis.text = element_blank(), axis.title=element_blank()) +
+  ylab("Total Length (cM)") +
+  xlab("Linkage Group") +
+  scale_y_reverse()
+```
+
+
+```{r GA, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+
+
+Jplot <- Jnew %>% distinct(chr, CHR, .keep_all = TRUE) %>% 
+  drop_na(chr) %>% 
+  mutate(chr=as.numeric(chr)) %>% filter(chr<25) %>% 
+  filter(lgchr==chr) %>% 
+  group_by(chr) %>% mutate(FEMALE = FEMALE-min(FEMALE)) %>% mutate(pphys=POS+as.numeric(phys))
+
+#Create list of chromosomes to flip
+JPchrs <- c("2", "3", "4", "5", "6", "7", "9", "10", "14", "15", "16", "21", "22", "23", "24")
+flipJP <- Jplot %>% filter(chr %in% JPchrs) %>% mutate(FEMALE = abs(FEMALE-max(FEMALE)))
+noflipJP <- Jplot %>% filter(!chr %in% JPchrs)
+fJP <- bind_rows(flipJP,noflipJP) 
+
+ggplot() +
+  geom_point(data=fJP, aes(x=pphys/1e6, y=FEMALE), size=0.8, alpha=0.8) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "none",        
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~chr, scales="free", ncol=4)
+
+
+```
+
+
+```{r}
+
+
+
+JPraw <- read_tsv("input/all_JP.txt")
+
+
+```
+

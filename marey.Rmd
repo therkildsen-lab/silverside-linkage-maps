@@ -1,0 +1,1432 @@
+---
+title: "Linkage Maps Filter and Plot"
+output: github_document
+always_allow_html: true
+---
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(knitr)
+library(rmarkdown)
+library(janitor)
+library(kableExtra)
+library(gridExtra)
+library(emmeans)
+library(rstatix)
+library(lmerTest)
+library(lme4)
+library(ggpubr)
+```
+
+```{r echo=FALSE}
+render_toc <- function(
+  filename, 
+  toc_header_name = "Table of Contents",
+  base_level = NULL,
+  toc_depth = 2
+) {
+  x <- readLines(filename, warn = FALSE)
+  x <- paste(x, collapse = "\n")
+  x <- paste0("\n", x, "\n")
+  for (i in 5:3) {
+    regex_code_fence <- paste0("\n[`]{", i, "}.+?[`]{", i, "}\n")
+    x <- gsub(regex_code_fence, "", x)
+  }
+  x <- strsplit(x, "\n")[[1]]
+  x <- x[grepl("^#+", x)]
+  if (!is.null(toc_header_name)) 
+    x <- x[!grepl(paste0("^#+ ", toc_header_name), x)]
+  if (is.null(base_level))
+    base_level <- min(sapply(gsub("(#+).+", "\\1", x), nchar))
+  start_at_base_level <- FALSE
+  x <- sapply(x, function(h) {
+    level <- nchar(gsub("(#+).+", "\\1", h)) - base_level
+    if (level < 0) {
+      stop("Cannot have negative header levels. Problematic header \"", h, '" ',
+           "was considered level ", level, ". Please adjust `base_level`.")
+    }
+    if (level > toc_depth - 1) return("")
+    if (!start_at_base_level && level == 0) start_at_base_level <<- TRUE
+    if (!start_at_base_level) return("")
+    if (grepl("\\{#.+\\}(\\s+)?$", h)) {
+      # has special header slug
+      header_text <- gsub("#+ (.+)\\s+?\\{.+$", "\\1", h)
+      header_slug <- gsub(".+\\{\\s?#([-_.a-zA-Z]+).+", "\\1", h)
+    } else {
+      header_text <- gsub("#+\\s+?", "", h)
+      header_text <- gsub("\\s+?\\{.+\\}\\s*$", "", header_text) # strip { .tabset ... }
+      header_text <- gsub("^[^[:alpha:]]*\\s*", "", header_text) # remove up to first alpha char
+      header_slug <- paste(strsplit(header_text, " ")[[1]], collapse="-")
+      header_slug <- tolower(header_slug)
+    }
+    paste0(strrep(" ", level * 4), "- [", header_text, "](#", header_slug, ")")
+  })
+  x <- x[x != ""]
+  knitr::asis_output(paste(x, collapse = "\n"))
+}
+
+ render_toc("lm3.Rmd")
+```
+
+```{r read, warning=FALSE, message=FALSE, echo=FALSE}
+#Read in genome coordinates of mapped RAD loci
+gpos <- read_tsv("input/locus_coordinates_v1.tsv") %>% 
+  separate(aln_pos, c("chr","phys","ori"), ":", extra='drop')
+
+#Read raw linkage map
+JPraw <- read_delim("input/JP14_LGs.txt", delim = " ", col_names = c("LG", "id_old", "pos")) %>% filter(!is.na(id_old))
+
+PJraw <- read_delim("input/PJ19_LGs.txt", delim = " ", col_names = c("LG", "id_old", "pos")) 
+
+F2raw <-  read_delim("input/F2_LGs.txt", delim = " ", col_names = c("LG", "id_old", "pos"), col_types = list(col_character(), col_double(), col_double())) 
+
+#Join linkage map with genome coordinates
+JPg <- JPraw %>% left_join(gpos, by = "id_old") %>% 
+  mutate(chr=as.numeric(chr), phys=as.numeric(phys)) 
+
+PJg <- PJraw %>% left_join(gpos, by = "id_old") %>% 
+  mutate(chr=as.numeric(chr), phys=as.numeric(phys)) 
+
+F2g <- F2raw %>% left_join(gpos, by = "id_old") %>% 
+  mutate(chr=as.numeric(chr), phys=as.numeric(phys)) 
+
+#Translate linkage groups to menidia scaffolds and medaka chromosomes 
+JPz <- JPg %>% 
+  mutate(LG = str_remove(LG,"m")) %>% 
+  mutate(lgchr=recode(LG,LG01="9", LG02="1", LG03="3", LG04="10", LG05="4", LG06="15", 
+                      LG07="6", LG08="7", LG09="5", LG10="22", LG11="14", LG12="12", 
+                      LG13="2", LG14="8", LG15="17", LG16="13", LG17="11", LG18="18", 
+                      LG19="19", LG20="16", LG21="20", LG22="21", LG23="23", LG24="24")) %>%
+  mutate(medchr=recode(lgchr,`1`="3", `2`="9", `3`="6", `4`="5", `5`="10", `6`="13", `7`="16", `8`="15", 
+                      `9`="7", `10`="4", `11`="21", `12`="22", `13`="12", `14`="14", `15`="11", `16`="20", 
+                      `17`="17", `18`="8", `19`="19", `20`="23", `21`="24", `22`="1", `23`="18", `24`="2",
+                      `25`="1", `26`="1", `27`="24")) %>% 
+  mutate(medchr=as.numeric(medchr))
+
+PJz <- PJg %>% 
+  mutate(LG = str_remove(LG,"m")) %>% 
+  mutate(lgchr=recode(LG,LG01="3", LG02="1", LG03="10", LG04="9", LG05="4", LG06="15", 
+                      LG07="6", LG08="22", LG09="18", LG10="7", LG11="2", LG12="5", 
+                      LG13="17", LG14="14", LG15="11", LG16="8", LG17="12", LG18="13", 
+                      LG19="16", LG20="19", LG21="20", LG22="21", LG23="23", LG24="24")) %>%
+  mutate(medchr=recode(lgchr,`1`="3", `2`="9", `3`="6", `4`="5", `5`="10", `6`="13", `7`="16", `8`="15", 
+                      `9`="7", `10`="4", `11`="21", `12`="22", `13`="12", `14`="14", `15`="11", `16`="20", 
+                      `17`="17", `18`="8", `19`="19", `20`="23", `21`="24", `22`="1", `23`="18", `24`="2",
+                      `25`="1", `26`="1", `27`="24")) %>% 
+  mutate(medchr=as.numeric(medchr))
+
+F2z <- F2g %>% 
+  mutate(LG = str_remove(LG,"m")) %>% 
+  mutate(lgchr=recode(LG,LG01="9", LG02="22", LG03="8", LG04="15", LG05="14", LG06="5", 
+                      LG07="2", LG08="13", LG09="10", LG10="4", LG11="21", LG12="6", 
+                      LG13="3", LG14="1", LG15="18", LG16="17", LG17="16", LG18="11", 
+                      LG19="20", LG20="19", LG21="23", LG22="7", LG23="24", LG24="12")) %>%
+  mutate(medchr=recode(lgchr,`1`="3", `2`="9", `3`="6", `4`="5", `5`="10", `6`="13", `7`="16", `8`="15", 
+                      `9`="7", `10`="4", `11`="21", `12`="22", `13`="12", `14`="14", `15`="11", `16`="20", 
+                      `17`="17", `18`="8", `19`="19", `20`="23", `21`="24", `22`="1", `23`="18", `24`="2",
+                      `25`="1", `26`="1", `27`="24")) %>% 
+  mutate(medchr=as.numeric(medchr))
+
+
+#Order by linkage group and genetic position
+JPy <- JPz %>% select(-id_new,-ori) %>% 
+  mutate(LG = str_remove(LG,"LG")) %>% 
+  mutate(LG = as.numeric(LG), lgchr = as.numeric(lgchr)) %>% 
+  arrange(lgchr,pos) %>% 
+  group_by(lgchr) %>% 
+  mutate(marker=seq_along(pos))
+
+PJy <- PJz %>% select(-id_new,-ori) %>% 
+  mutate(LG = str_remove(LG,"LG")) %>% 
+  mutate(LG = as.numeric(LG), lgchr = as.numeric(lgchr)) %>% 
+  arrange(lgchr,pos) %>% 
+  group_by(lgchr) %>% 
+  mutate(marker=seq_along(pos))
+
+F2y <- F2z %>% select(-id_new,-ori) %>% 
+  mutate(LG = str_remove(LG,"LG")) %>% 
+  mutate(LG = as.numeric(LG), lgchr = as.numeric(lgchr)) %>% 
+  arrange(lgchr,pos) %>% 
+  group_by(lgchr) %>% 
+  mutate(marker=seq_along(pos))
+```
+
+
+#### Georgia Female Linkage Map 
+```{r GAlinkage, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+ggplot(JPy) +
+  geom_point(aes(x=marker, y=pos), size=0.8, alpha=0.8) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",        
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="Ordered by Genetic Position", x="Marker", y="Genetic Position (cM)") +
+  facet_wrap(~medchr, scales="free", ncol=4)
+```
+
+#### New York Female Linkage Map 
+```{r NYlinkage, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+ggplot(PJy) +
+  geom_point(aes(x=marker, y=pos), size=0.8, alpha=0.8) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",        
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="Ordered by Genetic Position", x="Marker", y="Genetic Position (cM)") +
+  facet_wrap(~medchr, scales="free", ncol=4)
+```
+
+#### Hybrid F1 Female Linkage Map
+
+```{r F1linkage, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+ggplot(F2y) +
+  geom_point(aes(x=marker, y=pos), size=0.8, alpha=0.8) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",        
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="Ordered by Genetic Position", x="Marker", y="Genetic Position (cM)") +
+  facet_wrap(~medchr, scales="free", ncol=4)
+
+JPx <- JPy %>% mutate(assembled = case_when(is.na(chr) ~ "unmapped", chr < 25 ~ "og_scaffold", 
+                                            chr > 24 & chr < 28 ~ "megascaff", TRUE ~ "rest")) 
+
+```
+
+
+#### Edge Trimming with Lep-wrap
+> [Lep-wrap script](https://github.com/pdimens/LepWrap/blob/main/rules/LepMap3/trim.smk)
+
+```{r trim, warning=FALSE, message=FALSE, echo=FALSE}
+JPavel <- JPx %>% ungroup() %>% select(medchr,pos,marker)
+
+lgfile <- JPavel
+lgfile$Fpass <- "PASS"
+args <- c(0, 10, 10)
+QC_df <- lgfile %>% filter(Fpass == "raccoon")
+
+for(i in 1:24){
+  lgfile <- JPavel %>% filter(medchr == i)
+  lgfile <- arrange(lgfile, 2)
+  lgfile$Fpass <- "PASS"
+  
+  ##### Pruning the ends #####
+  # if the percent threshold is given as an interger, convert it to a decimal
+  dist_thresh <- as.numeric(args[2])
+  if(dist_thresh >= 1){
+    dist_thresh <- dist_thresh * .01
+  }
+  dist_thresh_f <- abs(max(lgfile$pos) - min(lgfile$pos)) * dist_thresh
+  
+  edge_length <- as.numeric(args[3])
+  if(edge_length >= 1){
+    edge_length <- edge_length * .01
+  }
+  
+  n_markers <- length(lgfile$pos)
+  front_edge <- round(n_markers * edge_length, digits = 0)
+  back_edge <- round(n_markers - front_edge, digits = 0)
+  
+  dist_thresh <- dist_thresh_f
+  # trim beginning
+  for(a in front_edge:2){ #first n% of total markers from the beginning
+    diff <- abs(lgfile[a,2]-lgfile[a-1,2]) # difference between two points
+    if( diff > dist_thresh ){ # is the difference between the two points > distance argument?
+      lgfile[(a-1):1, 4] <- "FAIL" # mark that marker and all markers BEFORE it as FAIL
+      break()
+    }
+  }
+  # trim end
+  for(z in back_edge:(n_markers-1)){ #last n% total markers starting from the back edge going out
+    diff <- abs(lgfile[z+1,2]-lgfile[z,2]) # difference between two points
+    if( diff > dist_thresh ){ # is the difference between the two points > distance argument?
+      lgfile[(z+1):n_markers,4] <- "FAIL" # mark that marker and all markers AFTER it as FAIL
+      break()
+    }
+  }
+  QC_df <- rbind(QC_df, lgfile)
+}
+
+# create new table of markers passing QC
+cleaned_markers <- QC_df %>% filter(Fpass == "PASS")
+
+# isolate bad markers
+removed_markers <- QC_df %>% filter(Fpass == "FAIL")
+
+# get simple counts
+rm_female <- table(QC_df %>% filter(Fpass == "FAIL") %>% select(medchr))
+```
+
+
+```{r trimplot,warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+rm_female %>% kable(col.names = c("LG","n"), align = "c", caption = "Edges Trimmed")
+
+ggplot(data=QC_df)+
+  geom_point(aes(x=marker, y=pos, color=Fpass)) +
+  scale_color_manual(values=c("indianred2", "dodgerblue")) +
+  theme(legend.position = "top") +
+  labs(x = "Marker Number", y = "Position (cM)", color = "QA Status")+
+  facet_wrap(~medchr, scales="free", ncol=4)
+
+```
+
+
+#### Filter Female Linkage Maps
+
+```{r markers, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 9, fig.width = 15}
+
+JPz <- JPx %>% left_join(QC_df, by=c("medchr","pos","marker")) %>% filter(Fpass=="PASS") %>% mutate(phys = replace_na(phys, 0),chr = replace_na(chr, 0))
+
+JPw <- JPz %>% distinct(id_old, .keep_all = TRUE) %>% group_by(lgchr) %>% mutate(pos = pos-min(pos)) 
+
+print(paste0(nrow(JPx), " markers in GA Linkage Map"))
+print(paste0(nrow(JPz), " markers post trimming (", nrow(JPx)-nrow(JPz), " removed)"))
+print(paste0(nrow(JPw), " one SNP per RADtag (", nrow(JPx)-nrow(JPw), " removed)"))
+
+
+PJx <- PJy %>% mutate(assembled = case_when(is.na(chr) ~ "unmapped", chr < 25 ~ "og_scaffold", chr > 24 & chr < 28 ~ "megascaff", TRUE ~ "rest")) %>% filter(!is.na(id_old)) %>% mutate(phys = replace_na(phys, 0),chr = replace_na(chr, 0))
+PJw <- PJx  %>% distinct(id_old, .keep_all = TRUE) 
+print(paste0(nrow(PJx), " markers in NY Linkage Map"))
+print(paste0(nrow(PJw), " one SNP per RADtag (", nrow(PJx)-nrow(PJw), " removed)"))
+
+
+F2x <- F2y %>% mutate(assembled = case_when(is.na(chr) ~ "unmapped", chr < 25 ~ "og_scaffold", chr > 24 & chr < 28 ~ "megascaff", TRUE ~ "rest"))  %>% filter(!is.na(id_old)) %>% mutate(phys = replace_na(phys, 0),chr = replace_na(chr, 0))
+F2w <- F2x %>% distinct(id_old, .keep_all = TRUE) 
+print(paste0(nrow(F2x), " markers in F1 Linkage Map"))
+print(paste0(nrow(F2w), " one SNP per RADtag (", nrow(F2x)-nrow(F2w), " removed)"))
+
+
+rawmaps <- bind_rows("GA"=JPz,"NY"=PJx,"F1"=F2x,.id="pop")
+
+rawmaps2 <- bind_rows("NY"=PJz,"F1"=F2z,.id="pop") %>% ungroup() %>% group_by(pop,medchr) %>% 
+  summarise(length=max(pos,na.rm = T), markers=n()) %>% 
+  pivot_wider(names_from = pop,  values_from = c(length,markers)) %>% adorn_totals()
+
+
+rawmaps2
+
+
+rawmaps3 <- JPx %>% group_by(medchr) %>% 
+  summarise(length=max(pos,na.rm = T), markers=n()) %>% adorn_totals()
+
+rawmaps3
+
+rmaps <- rawmaps %>% group_by(pop,lgchr) %>% filter(!(chr>0 & chr < 25 & lgchr!=chr)) %>% mutate(pos = pos-min(pos))
+
+print(paste0(nrow(rmaps), " post mismatch filter (", nrow(rawmaps)-nrow(rmaps), " removed)"))
+
+rawstats <- rmaps %>% group_by(pop,medchr) %>% 
+  summarise(length=max(pos), markers=n()) %>% 
+  pivot_wider(names_from = pop,  values_from = c(length,markers)) %>%  
+  select(medchr,length_GA,markers_GA,length_NY,markers_NY,length_F1,markers_F1) %>%
+  rename(group=medchr, GA_cM=length_GA, GA_SNPs=markers_GA,NY_cM=length_NY, NY_SNPs=markers_NY,F1_cM=length_F1, F1_SNPs=markers_F1) %>% 
+  adorn_totals() %>%
+  kable(., digits = 2) %>% 
+  add_header_above(., c("", "GA" = 2, "NY" = 2, "F1" = 2)) %>%
+  kable_paper(full_width = T)
+  
+
+rawstats
+
+
+PJv <- PJw %>% filter(!(chr>0 & chr < 25 & lgchr!=chr)) %>% 
+  group_by(medchr) %>% mutate(pos = pos-min(pos)) 
+print(paste0(nrow(PJv), " post mismatch filter (", nrow(PJw)-nrow(PJv), " removed)"))
+F2v <- F2w %>% filter(!(chr>0 & chr < 25 & lgchr!=chr)) %>% 
+  group_by(medchr) %>% mutate(pos = pos-min(pos))
+print(paste0(nrow(F2v), " post mismatch filter (", nrow(F2w)-nrow(F2v), " removed)"))
+
+```
+
+#### Georgia Linkage Map Markers
+
+```{r plotmarkersraw, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 8, fig.width = 13}
+
+plotrawJ <- JPw %>% ungroup()
+
+# Set up a data structure for scale tick marks
+y <- seq(0, 200, by=10)
+maj_ticks <- data.frame(y)
+maj_ticks$x <- -0.5
+
+y <- y <- seq(5, 200, by=10)
+min_ticks <- data.frame(y)
+min_ticks$x <- -0.5
+
+# Plot linkage map with markers colored based on genome-mapping
+ggplot(plotrawJ, aes(x=medchr, y=pos)) +
+  geom_path(aes(group=medchr), size=10, lineend="round", col="black") +
+  geom_path(aes(group=medchr), size=9, lineend="round", col="gray90") +
+  geom_rect(data=subset(plotrawJ, assembled=="og_scaffold"), aes(xmin=medchr-0.25, xmax=medchr+0.25, ymin=pos-0.1, ymax=pos+0.1), fill="blue3") +
+  geom_rect(data=subset(plotrawJ, assembled=="unmapped"), aes(xmin=medchr-0.25, xmax=medchr+0.25, ymin=pos-0.1, ymax=pos+0.1), fill="magenta2") +
+  geom_rect(data=subset(plotrawJ, assembled=="rest"), aes(xmin=medchr-0.25, xmax=medchr+0.25, ymin=pos-0.1, ymax=pos+0.1), fill="springgreen3") +
+  geom_rect(data=subset(plotrawJ, assembled=="megascaff"), aes(xmin=medchr-0.25, xmax=medchr+0.25, ymin=pos-0.1, ymax=pos+0.1), fill="orange") +
+  annotate("text", x = -1, y = 100, size =5, label = "Genetic Distance (cM)", color="#000000", angle="90") +
+  annotate("text", x = 0.25, y = seq(0, 200, by=20), label = seq(0, 200, by=20), size=4, color="black") +
+  annotate("text", x = 1:24, y = -7, label = 1:24, size = 5, color="black", fontface="bold") +
+  geom_segment(data=maj_ticks, aes(x=x, y=y, xend=0, yend=y), color="black") +
+  geom_segment(data=min_ticks, aes(x=x, y=y, xend=-0.25, yend=y), color="black") +
+  geom_segment(x=-0.5, y=5, xend=-0.5, yend=-200.5, size=2, color="black") +
+  annotate("text", x = 7, y = 195, label = "Chromosome", hjust = 0, size=4) +
+  geom_rect(xmin=6.6, xmax=6.9, ymin=-195, ymax=-196, fill="blue3")  +
+  annotate("text", x = 9.7, y = 195, label = "Scaffold", hjust = 0, size=4) +
+  geom_rect(xmin=9.3, xmax=9.6, ymin=-195, ymax=-196, fill="orange")  +
+  annotate("text", x = 12.1, y = 195, label = "Unanchored", hjust = 0, size=4) +
+  geom_rect(xmin=11.7, xmax=12, ymin=-195, ymax=-196, fill="springgreen3")  +
+  annotate("text", x = 14.6, y = 195, label = "Unmapped", hjust = 0, size=4) +
+  geom_rect(xmin=14.2, xmax=14.5, ymin=-195, ymax=-196, fill="magenta2")  +
+  theme(line=element_blank(), rect=element_blank(), axis.text = element_blank(), axis.title=element_blank()) +
+  ylab("Total Length (cM)") +
+  xlab("Linkage Group") +
+  scale_y_reverse()
+
+
+three <- bind_rows("GA"=JPw,"NY"=PJw,"F1"=F2w,.id="maps")
+
+stats <- three %>% group_by(maps,medchr) %>% 
+  summarise(length=max(pos), markers=n()) %>% 
+  pivot_wider(names_from = maps,  values_from = c(length,markers)) %>%  
+  select(medchr,length_GA,markers_GA,length_NY,markers_NY,length_F1,markers_F1) %>%
+  rename(group=medchr, GA_cM=length_GA, GA_SNPs=markers_GA,NY_cM=length_NY, NY_SNPs=markers_NY,F1_cM=length_F1, F1_SNPs=markers_F1) %>% 
+  adorn_totals() %>%
+  kable(., digits = 2) %>% 
+  add_header_above(., c("", "GA" = 2, "NY" = 2, "F1" = 2)) %>%
+  kable_paper(full_width = T)
+  
+
+stats
+
+```
+
+#### Female Marey Maps
+
+```{r mareyJP, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+#Create list of chromosomes to flip
+JPchrs <- c("1", "2", "3", "4", "6", "9", "11", "13", "16", "17", "20", "21", "22", "24")
+flipJP <- JPw %>% filter(lgchr %in% JPchrs) %>% group_by(lgchr) %>% mutate(pos = abs(pos-max(pos)))
+noflipJP <- JPw %>% filter(!lgchr %in% JPchrs)
+fJP <- bind_rows(flipJP,noflipJP) 
+
+fJP2 <- fJP %>% ungroup() %>% group_by(chr) %>% 
+  mutate(pos=case_when(chr==1 | chr==9 | chr==23 ~ abs(pos-max(pos)), TRUE ~ pos)) %>% 
+  mutate(phys=case_when(chr==1 | chr==9 | chr==23 ~ abs(phys-max(phys)), TRUE ~ phys)) %>% ungroup()
+
+fJPx <- fJP2 %>%  mutate(outliers=case_when(
+  chr>0 & chr < 25 & lgchr!=chr ~ "outlier",
+  lgchr==18 & chr==27 ~ "outlier",  
+  medchr==24 & pos>180 ~ "outlier",   
+  medchr==2 & pos>115 ~ "outlier",  
+  medchr==13 & marker==181 ~ "outlier",  
+  medchr==21 & marker==126 ~ "outlier",  
+  medchr==22 & marker==414 ~ "outlier",  
+  medchr==22 & marker==526 ~ "outlier",  
+  medchr==23 & marker==166 ~ "outlier",  
+  medchr==2 & marker==145 ~ "outlier",  
+  medchr==2 & marker==112 ~ "outlier",  
+  medchr==4 & marker==701 ~ "outlier",  
+  medchr==4 & marker==695 ~ "outlier",  
+  medchr==7 & marker==256 ~ "outlier",  
+  medchr==7 & marker==258 ~ "outlier",  
+  medchr==7 & marker==67 ~ "outlier",  
+  medchr==7 & marker==123 ~ "outlier",  
+  medchr==9 & marker==703 ~ "outlier",  
+  medchr==11 & marker==75 ~ "outlier",  
+  medchr==11 & marker==353 ~ "outlier",  
+  medchr==17 & marker==213 ~ "outlier" ,  
+  medchr==24 & marker==169 ~ "outlier" ,  
+  medchr==24 & marker==154 ~ "outlier" ,  
+  TRUE ~ "retain"))
+
+
+ggplot() +
+  geom_point(data=fJPx, aes(x=phys/1e6, y=pos, color=assembled, shape=outliers), size=0.8, alpha=0.8) + 
+  scale_shape_manual(labels = c("Outlier", ""), values = c(1, 19))+
+  scale_color_manual(labels = c("Scaffold", "Chromosome", "Unanchored", "Unmapped"), values=c("orange","dodgerblue3","springgreen2", "magenta")) +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="Georgia Female", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  guides(color=guide_legend(override.aes=list(size=4, alpha=1)), shape=guide_legend(override.aes=list(size=4))) +
+  facet_wrap(~medchr, scales="free", ncol=4)
+```
+
+
+```{r mareyPJ, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+#Create list of chromosomes to flip
+PJchrs <- c("1", "2", "9", "10", "11", "14", "16", "17", "20", "24")
+flipPJ <- PJw %>% filter(lgchr %in% PJchrs) %>% group_by(lgchr) %>% mutate(pos = abs(pos-max(pos)))
+noflipPJ <- PJw %>% filter(!lgchr %in% PJchrs)
+fPJ <- bind_rows(flipPJ,noflipPJ) 
+
+fPJ2 <- fPJ %>% ungroup() %>% group_by(chr) %>% 
+  mutate(pos=case_when(chr==1 | chr==9 | chr==23 ~ abs(pos-max(pos)), TRUE ~ pos)) %>% 
+  mutate(phys=case_when(chr==1 | chr==9 | chr==23 ~ abs(phys-max(phys)), TRUE ~ phys)) %>% 
+  mutate(pos=case_when(chr==19 & pos > 70 ~ pos-min(70.169), 
+                          chr==19 & pos < 30 ~ abs(pos-25.895)+74.794, 
+                          TRUE ~ pos)) %>% ungroup()
+
+fPJx <- fPJ2 %>%  mutate(outliers=case_when(
+  chr>0 & chr < 25 & lgchr!=chr ~ "outlier",
+  lgchr==18 & chr==27 ~ "outlier",
+  lgchr==23 & marker==3 ~ "outlier",
+  lgchr==18 & marker==23 ~ "outlier",
+  medchr==13 & marker==647 ~ "outlier",
+  medchr==14 & marker==1 ~ "outlier",
+  medchr==17 & marker==585 ~ "outlier",
+  medchr==22 & phys < 2600000 & pos>60 ~ "outlier",
+  medchr==2 & marker==132 ~ "outlier",
+  medchr==2 & marker==355 ~ "outlier",
+  medchr==2 & marker==171 ~ "outlier",
+  medchr==2 & marker==196 ~ "outlier",
+  medchr==2 & marker==197 ~ "outlier",
+  medchr==4 & marker==275 ~ "outlier",
+  medchr==7 & marker==131 ~ "outlier",  
+  medchr==11 & marker==427 ~ "outlier",
+  medchr==11 & marker==73 ~ "outlier",
+  medchr==16 & marker==663 ~ "outlier",
+  medchr==18 & marker==408 ~ "outlier",
+  medchr==19 & marker==121 ~ "outlier",
+  medchr==19 & marker==117 ~ "outlier",
+  medchr==19 & marker==118 ~ "outlier",
+  medchr==19 & marker==218 ~ "outlier",
+  medchr==19 & marker==232 ~ "outlier",
+  medchr==19 & marker==124 ~ "outlier",
+  medchr==19 & marker==129 ~ "outlier",
+  medchr==21 & marker==105 ~ "outlier",
+  TRUE ~ "retain"))
+
+
+ggplot() +
+  geom_point(data=fPJx, aes(x=phys/1e6, y=pos, color=assembled, shape=outliers), size=0.8, alpha=0.8) + 
+  scale_shape_manual(labels = c("Outlier", ""), values = c(1, 19))+
+  scale_color_manual(labels = c("Scaffold", "Chromosome", "Unanchored", "Unmapped"), values=c("orange","dodgerblue3","springgreen2", "magenta")) +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="New York Female", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  guides(color=guide_legend(override.aes=list(size=4, alpha=1)), shape=guide_legend(override.aes=list(size=4))) +
+  facet_wrap(~medchr, scales="free", ncol=4)
+```
+
+
+```{r mareyF1, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+#Create list of chromosomes to flip
+F2chrs <- c("2", "3", "4", "5", "6", "7", "13", "16", "18", "20", "21","24")
+flipF2 <- F2w %>% filter(lgchr %in% F2chrs) %>% group_by(lgchr) %>% mutate(pos = abs(pos-max(pos)))
+noflipF2 <- F2w %>% filter(!lgchr %in% F2chrs)
+fF2 <- bind_rows(flipF2,noflipF2) 
+
+fF22 <- fF2 %>% group_by(chr) %>% 
+  mutate(pos=case_when(chr==1 | chr==9 | chr==23 ~ abs(pos-max(pos)), TRUE ~ pos)) %>% 
+  mutate(phys=case_when(chr==1 | chr==9 | chr==23 ~ abs(phys-max(phys)), TRUE ~ phys)) %>% ungroup()
+
+fF2x <- fF22 %>% mutate(outliers=case_when(
+  chr>0 & chr < 25 & lgchr!=chr ~ "outlier",
+  lgchr==18 & chr==27 ~ "outlier", 
+  medchr==1 & marker==884 ~ "outlier",  
+  medchr==2 & marker==70 ~ "outlier",  
+  medchr==2 & marker==95 ~ "outlier",  
+  medchr==3 & marker==115 ~ "outlier", 
+  medchr==4 & marker==871 ~ "outlier", 
+  medchr==4 & marker==873 ~ "outlier", 
+  medchr==4 & marker==864 ~ "outlier", 
+  medchr==5 & marker==1 ~ "outlier", 
+  medchr==6 & marker==885 ~ "outlier", 
+  medchr==7 & marker==767 ~ "outlier", 
+  medchr==9 & marker==819 ~ "outlier", 
+  medchr==10 & marker==1 ~ "outlier", 
+  medchr==17 & marker==548 ~ "outlier", 
+  medchr==21 & marker==833 ~ "outlier", 
+  medchr==22 & pos>150 ~ "outlier",
+  medchr==22 & marker==49 ~ "outlier",
+  medchr==22 & marker==320 ~ "outlier", 
+  medchr==24 & marker==175 ~ "outlier",
+  medchr==24 & marker==179 ~ "outlier",
+  medchr==24 & marker==289 ~ "outlier",
+  TRUE ~ "retain"))
+
+  
+
+ggplot() +
+  geom_point(data=fF2x, aes(x=phys/1e6, y=pos, color=assembled, shape=outliers), size=0.8, alpha=0.8) + 
+  scale_shape_manual(labels = c("Outlier", ""), values = c(1, 19))+
+  scale_color_manual(labels = c("Scaffold", "Chromosome", "Unanchored", "Unmapped"), values=c("orange","dodgerblue3","springgreen2", "magenta")) +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="Hybrid Female", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  guides(color=guide_legend(override.aes=list(size=4, alpha=1)), shape=guide_legend(override.aes=list(size=4))) +
+  facet_wrap(~medchr, scales="free", ncol=4)
+
+```
+
+
+```{r mareyALL, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+
+all <- bind_rows("GA"=fJPx,"NY"=fPJx,"F1"=fF2x,.id = "pop") %>% ungroup() 
+
+filtall <- all %>% 
+  filter(assembled=="og_scaffold" | assembled=="megascaff") %>% 
+  filter(outliers=="retain") %>%  
+  group_by(pop,medchr) %>% mutate(pos = pos-min(pos)) 
+
+filtall %>% ungroup() %>% group_by(pop,medchr) %>% 
+  summarise(length=max(pos),markers=n()) %>% pivot_wider(names_from = pop, values_from=c(length,markers)) %>% 
+  select(medchr,length_GA,markers_GA,length_NY,markers_NY,length_F1,markers_F1) %>%
+  rename(group=medchr, GA_cM=length_GA, GA_SNPs=markers_GA,NY_cM=length_NY, NY_SNPs=markers_NY,F1_cM=length_F1, F1_SNPs=markers_F1) %>% 
+  adorn_totals() %>%
+  kable(., digits = 2) %>% 
+  add_header_above(., c("", "GA" = 2, "NY" = 2, "F1" = 2)) %>%
+  kable_paper(full_width = T)
+
+
+ggplot() + 
+  geom_point(data=subset(filtall,pop=="F1"), aes(x=phys/1e6, y=pos), size=0.8, alpha=0.8, color="goldenrod2")+
+  geom_point(data=subset(filtall,pop=="GA"), aes(x=phys/1e6, y=pos), size=0.8, alpha=0.8, color="red2")+
+  geom_point(data=subset(filtall,pop=="NY"), aes(x=phys/1e6, y=pos), size=0.8, alpha=0.8, color="blue2")+
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1))) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~medchr, scales="free", ncol=4)
+
+
+```
+
+#### Male Marey Maps
+
+```{r male, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+rawmale <- read_tsv("input/allmergemale.txt")
+
+rawmaleG <- rawmale %>% 
+  filter(groups=="NewYork") %>% 
+  mutate(lgchr=recode(LG.x,`1`="3", `2`="1", `3`="10", `4`="9", `5`="4", `6`="15", `7`="6", `8`="22", `9`="18", `10`="7", `11`="2", `12`="5", `13`="17", `14`="14", `15`="11", `16`="8", `17`="12", `18`="13", `19`="16", `20`="19", `21`="20", `22`="21", `23`="23", `24`="24")) %>% 
+  mutate(lgchr=as.numeric(lgchr))
+
+rawmaleGA <- rawmaleG %>%
+  mutate(medchr=recode(lgchr,`1`="3", `2`="9", `3`="6", `4`="5", `5`="10", `6`="13", `7`="16", `8`="15", `9`="7", `10`="4", `11`="21", `12`="22", `13`="12", `14`="14", `15`="11", `16`="20", `17`="17", `18`="8", `19`="19", `20`="23", `21`="24", `22`="1", `23`="18", `24`="2", `25`="1", `26`="1", `27`="24")) %>% 
+  mutate(medchr=as.numeric(medchr)) %>% 
+  mutate(medchr=case_when(is.na(medchr)~lgchr, TRUE ~medchr)) 
+
+male <- rawmaleGA %>%
+  arrange(medchr,GEN) %>% 
+  group_by(medchr) %>% 
+  mutate(marker=seq_along(GEN)) %>% select(medchr,lgchr,CHR,POS,GEN,marker)
+
+maleg <- male %>% left_join(gpos, by = c("CHR"="id_old")) %>% 
+  mutate(chr=as.numeric(chr), phys=as.numeric(phys)) 
+
+maletabG <- maleg %>% ungroup() %>% group_by(medchr) %>% 
+  summarise(length=max(GEN,na.rm = T), markers=n()) %>% 
+  adorn_totals()
+maletabG
+
+Gmalex <- maleg %>% 
+  mutate(assembled = case_when(is.na(chr) ~ "unmapped", 
+                               chr < 25 ~ "og_scaffold", 
+                               chr > 24 & chr < 28 ~ "anchored", 
+                               TRUE ~ "rest"))  %>% 
+ mutate(phys = replace_na(phys, 0),chr = replace_na(chr, 0))
+
+
+malew <- Gmalex %>% filter(!chr==0)
+malez <- malew %>% distinct(CHR, .keep_all = TRUE)
+maley <- malez %>% filter(chr < 28) %>% 
+  add_count(medchr, chr) %>% filter(n>5)
+
+print(paste0(nrow(Gmalex), " markers in GA Male Linkage Map"))
+print(paste0(nrow(malew), " map to genome (", nrow(Gmalex)-nrow(malew), " removed)"))
+print(paste0(nrow(malez), " one SNP per RADtag (", nrow(malew)-nrow(malez), " removed)"))
+print(paste0(nrow(maley), " scaffolds >1Mb (", nrow(malez)-nrow(maley), " removed)"))
+
+males <- maley %>% select(chr,phys,medchr,GEN) %>% rename(pos=GEN) %>% arrange(chr,phys) %>% 
+  group_by(medchr) %>% mutate(pos = pos-min(pos))
+
+
+rawmaleN <- rawmale %>% 
+  filter(groups=="Georgia") %>% 
+  mutate(lgchr=recode(LG.x, `10`="1", `24`="2", `2`="3", `4`="4", `5`="5", `3`="6", `1`="7", `18`="8", `13`="9", `9`="10", `6`="11", `16`="12", `7`="13", `11`="14", `14`="15", `8`="16", `15`="17",  `23`="18", `19`="19", `20`="20", `17`="21", `12`="22", `21`="23", `22`="24")) %>% 
+  mutate(lgchr=as.numeric(lgchr))
+
+rawmaleN <- rawmale %>% 
+  filter(groups=="Georgia") %>% 
+  mutate(lgchr=recode(LG.x,`1`="9", `2`="1", `3`="3", `4`="10", `5`="4", `6`="15", `7`="6", `8`="7", `9`="5", `10`="22", `11`="14", `12`="12", `13`="2", `14`="8", `15`="17", `16`="13",  `17`="11", `18`="18", `19`="19", `20`="16", `21`="20", `22`="21", `23`="23", `24`="24")) %>% 
+  mutate(lgchr=as.numeric(lgchr))
+
+
+rawmaleNY <- rawmaleN %>%
+  mutate(medchr=recode(lgchr,`1`="3", `2`="9", `3`="6", `4`="5", `5`="10", `6`="13", `7`="16", `8`="15", `9`="7", `10`="4", `11`="21", `12`="22", `13`="12", `14`="14", `15`="11", `16`="20", `17`="17", `18`="8", `19`="19", `20`="23", `21`="24", `22`="1", `23`="18", `24`="2", `25`="1", `26`="1", `27`="24")) %>% 
+  mutate(medchr=as.numeric(medchr)) %>% 
+  mutate(medchr=case_when(is.na(medchr)~lgchr, TRUE ~medchr)) 
+
+maleN <- rawmaleNY %>%
+  arrange(medchr,GEN) %>% 
+  group_by(medchr) %>% 
+  mutate(marker=seq_along(GEN)) %>% select(medchr,lgchr,CHR,POS,GEN,marker)
+
+maleNY <- maleN %>% left_join(gpos, by = c("CHR"="id_old")) %>% 
+  mutate(chr=as.numeric(chr), phys=as.numeric(phys)) 
+
+maletabN <- maleNY %>% ungroup() %>% group_by(medchr) %>% 
+  summarise(length=max(GEN,na.rm = T), markers=n()) %>% 
+  adorn_totals()
+maletabN
+
+Nmalex <- maleNY %>% 
+  mutate(assembled = case_when(is.na(chr) ~ "unmapped", 
+                               chr < 25 ~ "og_scaffold", 
+                               chr > 24 & chr < 28 ~ "anchored", 
+                               TRUE ~ "rest"))  %>% 
+ mutate(phys = replace_na(phys, 0),chr = replace_na(chr, 0))
+
+
+Nmalew <- Nmalex %>% filter(!chr==0)
+Nmalez <- Nmalew %>% distinct(CHR, .keep_all = TRUE)
+Nmaley <- Nmalez %>% filter(chr < 28) %>% 
+  add_count(medchr, chr) %>% filter(n>5)
+
+print(paste0(nrow(Nmalex), " markers in NY Male Linkage Map"))
+print(paste0(nrow(Nmalew), " map to genome (", nrow(Nmalex)-nrow(Nmalew), " removed)"))
+print(paste0(nrow(Nmalez), " one SNP per RADtag (", nrow(Nmalew)-nrow(Nmalez), " removed)"))
+print(paste0(nrow(Nmaley), " scaffolds >1Mb (", nrow(Nmalez)-nrow(Nmaley), " removed)"))
+
+Nmales <- Nmaley %>% select(chr,phys,medchr,GEN) %>% rename(pos=GEN) %>% arrange(chr,phys) %>% 
+  group_by(medchr) %>% mutate(pos = pos-min(pos))
+
+
+bothmale  <- bind_rows("GA" = Gmalex, "NY" = Nmalex, .id="pop") %>% 
+  mutate(start=case_when(
+    chr==25 ~ phys+4724961,
+    chr==22 ~ phys+12543803,
+    chr==21 ~ phys+2813358,
+    TRUE ~ phys)) 
+
+bothmalefilt <- bind_rows("GA" = maley, "NY" = Nmaley, .id="pop") %>% 
+  mutate(start=case_when(
+    chr==25 ~ phys+4724961,
+    chr==22 ~ phys+12543803,
+    chr==21 ~ phys+2813358,
+    TRUE ~ phys)) %>% ungroup()
+  
+malestats <- bothmalefilt %>% group_by(pop,medchr) %>% mutate(GEN = GEN-min(GEN)) %>% 
+  summarise(length=max(GEN), markers=n()) %>% ungroup()
+
+
+malestats %>% pivot_wider(names_from = c(pop), values_from=c(length,markers)) %>% adorn_totals()
+
+
+ggplot() + 
+  geom_point(data=subset(bothmale,pop=="NY"), aes(x=start/1e6, y=GEN, color=assembled), size=0.8, alpha=0.8) +
+  scale_color_manual(labels = c("Scaffold", "Chromosome", "Unanchored", "Unmapped"), values=c("orange","dodgerblue3","springgreen2", "magenta")) +
+  scale_shape_manual(values=c(21,24)) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1))) +
+  labs(title="New York Male", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~medchr, scales="free", ncol=4)
+
+ggplot() + 
+  geom_point(data=subset(bothmale,pop=="GA"), aes(x=start/1e6, y=GEN, color=assembled), size=0.8, alpha=0.8) +
+  scale_color_manual(labels = c("Scaffold", "Chromosome", "Unanchored", "Unmapped"), values=c("orange","dodgerblue3","springgreen2", "magenta")) +
+  scale_shape_manual(values=c(21,24)) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1))) +
+  labs(title="Georgia Male", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~medchr, scales="free", ncol=4)
+```
+
+
+```{r allmaps, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8, eval=FALSE}
+fGA <- filtall %>% filter(pop=="GA") %>% ungroup() %>% select(chr,phys,medchr,pos) %>% arrange(chr,phys)
+fNY <- filtall %>% filter(pop=="NY") %>% ungroup() %>% select(chr,phys,medchr,pos) %>% arrange(chr,phys)
+fF1 <- filtall %>% filter(pop=="F1") %>% ungroup() %>% select(chr,phys,medchr,pos) %>% arrange(chr,phys)
+
+filtnew <- filtall %>% ungroup() %>% group_by(pop,medchr) %>% 
+  mutate(gen=case_when(medchr==3 | medchr==7 | medchr==18 ~ abs(pos-max(pos)), TRUE ~ pos)) %>% 
+  mutate(mb=case_when(medchr==3 | medchr==7 | medchr==18 ~ abs(phys-max(phys)), TRUE ~ phys))
+
+
+ggplot() + 
+  geom_point(data=filtnew, aes(x=mb/1e6, y=gen, color=pop), size=0.8, alpha=0.8)+
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1))) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~medchr, scales="free", ncol=4)
+
+write_csv(males,"males.csv")
+write_csv(fGA,"GeorgiaF.csv")
+write_csv(fNY,"NewYorkF.csv")
+write_csv(fF1,"HybridF.csv")
+
+#python -m jcvi.assembly.allmaps merge ./ALLMAPS/males.csv ./ALLMAPS/GeorgiaF.csv ./ALLMAPS/NewYorkF.csv ./ALLMAPS/HybridF.csv -o JM-2.bed
+#python -m jcvi.assembly.allmaps path JM-2.bed /workdir/anna/dovetail/menidia_menidia_tidy.filter1000.fasta
+```
+
+#### ALLMAPS Results (anchored genome)
+
+```{r anchored, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+maria <- read_tsv("input/mainv.txt") %>% rename(CHR=chr)
+
+
+newbed <- read_tsv("allmaps_out/new.bed", col_names = c("chr","start","end", "sex", "mchr", "pos","fchr","phys")) %>% 
+  mutate(chr = as.numeric(str_remove(chr,"chr"))) %>% 
+  mutate(assembled=case_when(fchr>24 ~ "anchored", 
+                       TRUE ~ "og"))
+
+GAsex <- newbed %>% filter(sex=="GeorgiaF" | sex=="males") %>% 
+  rename(CHR=chr) %>%  group_by(sex,CHR) %>%
+  mutate(gen=case_when(CHR==3 | CHR==7 | CHR==18 ~ abs(pos-max(pos)), TRUE ~ pos)) %>% 
+  mutate(mb=case_when(CHR==3 | CHR==7 | CHR==18 ~ abs(start-max(start)), TRUE ~ start))
+
+
+females <- newbed %>% filter(!sex=="males") %>% 
+  mutate(pop=recode(sex,GeorgiaF="GA",HybridF="F1",NewYorkF="NY")) %>% 
+  filter(!(pop=="NY" & chr==11 & phys ==10223)) %>% 
+  rename(CHR=chr) %>% 
+  mutate(newgen=case_when(pop=="NY" & CHR==19 & pos > 70 ~ pos-min(70.169), 
+                          pop=="NY" & CHR==19 & pos < 30 ~ abs(pos-25.895)+74.794, 
+                          TRUE ~ pos))
+
+nfemales <- females %>% group_by(pop,CHR) %>%
+  mutate(gen=case_when(CHR==3 | CHR==7 | CHR==18 ~ abs(newgen-max(newgen)), TRUE ~ newgen)) %>% 
+  mutate(mb=case_when(CHR==3 | CHR==7 | CHR==18 ~ abs(start-max(start)), TRUE ~ start))
+
+statsanc <- nfemales %>% group_by(pop,CHR) %>% 
+  summarise(length=max(gen), markers=n()) %>% 
+  pivot_wider(names_from = pop,  values_from = c(length,markers)) %>%  
+  select(CHR,length_GA,markers_GA,length_NY,markers_NY,length_F1,markers_F1) %>%
+  rename(group=CHR, GA_cM=length_GA, GA_SNPs=markers_GA,NY_cM=length_NY, NY_SNPs=markers_NY,F1_cM=length_F1, F1_SNPs=markers_F1) %>% 
+  adorn_totals() %>%
+  kable(., digits = 2) %>% 
+  add_header_above(., c("", "GA" = 2, "NY" = 2, "F1" = 2)) %>%
+  kable_paper(full_width = T)
+  
+
+statsanc
+
+
+ggplot() + 
+  geom_rect(data=subset(maria, map=="ALL"), aes(xmin=inv_start, xmax=inv_end, ymin=-Inf, ymax=Inf), alpha=0.2) +
+  geom_rect(data=subset(maria, map=="NY"), aes(xmin=inv_start, xmax=inv_end, ymin=-Inf, ymax=Inf), alpha=0.2) +
+  geom_rect(data=subset(maria, map=="NY2"), aes(xmin=inv_start, xmax=inv_end, ymin=-Inf, ymax=Inf), alpha=0.1) +
+  geom_rect(data=subset(maria, map=="GA1"), aes(xmin=inv_start, xmax=inv_end, ymin=-Inf, ymax=Inf), alpha=0.1) +
+  geom_rect(data=subset(maria, map=="NYF1"), aes(xmin=inv_start, xmax=inv_end, ymin=-Inf, ymax=Inf), alpha=0.2) +
+  geom_point(data=nfemales, aes(x=mb/1e6, y=gen, color=pop), size=0.8, alpha=0.8)+
+  scale_color_manual(labels = c("F1", "GA", "NY"), values=c("goldenrod2", "red2", "blue2")) +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1))) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~CHR, scales="free", ncol=4)
+
+
+
+ggplot() + 
+  geom_point(data=GAsex, aes(x=mb/1e6, y=gen, color=sex), size=0.8, alpha=0.8) +
+  scale_color_manual(labels = c("female", "male"), values=c("red2", "gray")) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1), reverse = TRUE)) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~CHR, scales="free", ncol=4)
+
+```
+
+
+#### Flip and Calculate Recombination Rates
+
+```{r rr, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+
+GAinv <- nfemales %>%
+filter(pop=="GA") %>%
+mutate(pphys=mb/1e6) %>% 
+mutate(inversions = case_when(
+    fchr == 26 & pphys < 0.5 ~ "inversion",
+    CHR == 5 & pphys > 21 ~ "inversion",
+    CHR == 10 & pphys > 1.4 & pphys < 2 ~ "inversion",
+    CHR == 10 & pphys > 21.5 ~ "unknown",
+    CHR == 12 & pphys > 0.2 & pphys < 1.7 ~ "inversion",
+    CHR == 19 & pphys < 2.15 ~ "inversion",
+    CHR == 20 & pphys < 4.5 ~ "unknown",
+    CHR == 24 & pphys < 0.8 ~ "unknown",
+    TRUE ~ "linear"))
+
+NYinv <- nfemales %>%
+  filter(pop=="NY")  %>%
+  mutate(pphys=mb/1e6) %>% 
+  mutate(inversions = case_when(
+    fchr == 26 & pphys < 0.5 ~ "inversion",
+    CHR == 5 & pphys > 21 ~ "inversion",
+    CHR == 4 & pphys > 12.2 & pphys < 14.15 ~ "inversion",
+    CHR == 7 & pphys > 11.8 & pphys < 13.6 ~ "inversion",
+    CHR == 7 & pphys < 0.165 ~ "inversion2",
+    CHR == 8 & pphys > 2.39 & pphys < 15 ~"inversion",
+    CHR == 10 & pphys > 1.05 & pphys < 2.2 ~ "inversion",
+    CHR == 10 & pphys > 21.6 ~ "unknown",
+    CHR == 12 & pphys > 0.1 & pphys < 1.5 ~ "inversion",
+    CHR == 18 & pphys > 0.8 & pphys < 1.5 ~ "inversion",
+    CHR == 18 & pphys > 1.5 & pphys < 4.2 ~ "inversion2",
+    CHR == 18 & pphys > 4.2 & pphys < 8.4 ~ "inversion3",
+    CHR == 19 & pphys > 2.1 & pphys < 3.44 ~ "inversion",
+    CHR == 20 & pphys < 4.5 ~ "unknown",
+    CHR == 24 & pphys > 3.5 & pphys < 13 ~ "inversion", 
+    #CHR == 19 & pphys > 14.2 ~ "translocation", 
+    CHR == 24 & pphys < 0.8 ~ "unknown",
+    TRUE ~ "linear"))
+
+F1inv <- nfemales %>%
+  filter(pop=="F1")  %>%
+  mutate(pphys=mb/1e6) %>% 
+  mutate(inversions = case_when(
+    fchr == 26 & pphys < 0.5 ~ "inversion",
+    CHR == 5 & pphys > 21 ~ "inversion",
+    CHR == 7 & pphys < 0.165  ~ "inversion",
+    CHR == 10 & pphys > 1.4 & pphys < 2 ~ "inversion",
+    CHR == 10 & pphys > 21.5 ~ "unknown",
+    CHR == 12 & pphys > 0.1 & pphys < 1.5 ~ "inversion",
+    CHR == 19 & pphys < 3.5 ~ "inversion",
+    CHR == 20 & pphys < 4.5 ~ "unknown",
+    CHR == 24 & pphys < 0.8 ~ "unknown",
+    TRUE ~ "linear"))
+
+# Invert inversions
+invNY <- NYinv %>% filter(grepl("inversion",inversions)) %>% group_by(CHR,inversions) %>% mutate(pphys=(max(pphys)+min(pphys))-pphys) 
+invGA <- GAinv %>% filter(grepl("inversion",inversions)) %>% group_by(CHR,inversions) %>% mutate(pphys=(max(pphys)+min(pphys))-pphys) 
+invF1 <- F1inv %>% filter(grepl("inversion",inversions)) %>% group_by(CHR,inversions) %>% mutate(pphys=(max(pphys)+min(pphys))-pphys) 
+
+
+# Un-inverted regions
+linNY <- NYinv %>% filter(inversions == "linear") 
+linGA <- GAinv %>% filter(inversions == "linear") 
+linF1 <- F1inv %>% filter(inversions == "linear") 
+
+# Combine
+NYfix <- bind_rows("inversions" = invNY, "linear" = linNY) %>% group_by(CHR) %>% mutate(gen = gen-min(gen))
+GAfix <- bind_rows("inversions" = invGA, "linear" = linGA) %>% group_by(CHR) %>% mutate(gen = gen-min(gen))
+F1fix <- bind_rows("inversions" = invF1, "linear" = linF1) %>% group_by(CHR) %>% mutate(gen = gen-min(gen))
+
+ggplot() +
+  geom_point(data=GAfix, aes(x=pphys, y=gen), color="red2", size=0.8, alpha=0.8) + 
+  geom_point(data=F1fix, aes(x=pphys, y=gen), color="goldenrod2", size=0.8, alpha=0.8) + 
+  geom_point(data=NYfix, aes(x=pphys, y=gen), color="blue2", size=0.8, alpha=0.8) + 
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "none",
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~CHR, scales="free", ncol=4)
+
+allflip <- bind_rows("NY" = NYfix, "GA" = GAfix, "F1" = F1fix, .id="maps") %>% 
+  arrange(maps,CHR,gen) %>% group_by(maps,CHR) %>% 
+  mutate(marker=seq_along(gen)) %>% 
+  select(maps,CHR,marker,pphys,gen) %>% 
+  rename("set"=maps,"map"=CHR, "phys" =pphys, "gen"=gen)
+
+#write_delim(allflip, "out/newflip_RR.txt", delim = " ")
+
+recomb_df <- read_delim("input/recomb_df.txt", delim=" ")
+
+ggplot() + 
+  geom_point(data=recomb_df, aes(x=mb, y=regDr, color=set), size=0.5) +
+  scale_color_manual(labels = c("F1", "GA", "NY"), values=c("goldenrod2", "red2", "blue2")) +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "top",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1), reverse = TRUE)) +
+  labs(title="Recomb Rates using BREC (Mansour et al 2021)", subtitle = "span=0.15", x="Physical Position (Mbp)", y="Recombination Rate (cM/Mb)") +
+  facet_wrap(~map, scales="free", ncol=4)
+
+
+```
+
+
+#### Sex-specific Recombination Rates in Fishes
+
+```{r regress,warning=FALSE, message=FALSE, echo=FALSE, fig.height = 5, fig.width = 5}
+fishcm <- read_tsv("input/fishcm.txt") %>% mutate(logm=log10(male_cm), logf=log10(fem_cm))
+
+
+malemodel <- lm(fishcm$logm~fishcm$male_n)  #Create a linear model
+mres <- resid(malemodel)
+
+femalemodel <- lm(fishcm$logf~fishcm$fem_n)  #Create a linear model
+fres <- resid(femalemodel)
+
+newres <- bind_cols(fishcm,mres,fres) %>% filter(!fish=="Menidia_menidia") %>% filter(!fish=="Menidia_menidia2") %>% filter(!fish=="Menidia_menidia3") %>%
+  rename(resm=...8, resf=...9) %>% 
+  mutate(sp=case_when(fish=="Menidia_menidia4"~ "silver", TRUE ~ "bronze")) %>%
+  mutate(diff=resf-resm,ratio=fem_cm/male_cm)
+
+ggplot(newres, aes(x=resm, y=resf, shape=sp)) +
+  geom_point(size=2.5) +
+  geom_smooth(method=lm, se=FALSE, col='black', size=1) +
+  scale_shape_manual(values=c(21,19))+
+  theme_bw() +
+  theme(legend.position="none",
+        panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        axis.text.y=element_text(colour="black",size=14),
+        axis.text.x=element_text(colour="black",size=14),
+        axis.title.x=element_text(size=14),
+        axis.title.y=element_text(size=14)) +
+  labs(title="",x="Log male residual map length", y="Log female residual map length") 
+```
+
+
+```{r lollipop,warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 7.5}
+lollipop <- read_tsv("input/lollipop.txt") %>% 
+  mutate(fish=factor(fish,fish)) %>% mutate(fish=str_replace(fish,"_"," ")) %>% mutate(fish=str_replace(fish,"_"," "))  %>% 
+  arrange(resid_avg)  %>% mutate(common=factor(common,common)) 
+
+#library(taxize)
+#fish <- sci2comm(lollipop$fish, db = "ncbi", simplify = TRUE)
+
+
+ggplot(lollipop) +
+  geom_segment(aes(x=common, xend=common, y=malecm, yend=femcm), color="grey",size=2) +
+  geom_point(aes(x=common, y=malecm), color="aquamarine4", size=3) +
+  geom_point(aes(x=common, y=resid_avg), color="black", shape="|", size=2) +
+  geom_point(aes(x=common, y=femcm), color="tomato", size=3 ) + 
+  annotate("text", x = 62, y = -0.35, label = "• Male", size=5, color="aquamarine4") +
+  annotate("text", x = 62, y = -0.15, label = "• Female", size=5, color="tomato") +
+  coord_flip(ylim = c(-0.4, 0.6), clip = "off")+
+  theme_bw() +
+  theme(panel.border = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x=element_text(color="black",family="Helvetica",size=11),
+        axis.text.y=element_text(colour="black",family="Helvetica",size=11,hjust = 0),
+        axis.title.x=element_text(size=12,family="Helvetica")) +
+  xlab("") +
+  ylab("Log Residual Genetic Map Length (cM)")
+
+
+```
+
+
+#### Population Differentiation (FST) at Inversions
+
+```{r fst, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+
+#Import FST data from Arne
+FST <- read_tsv("input/mme_jiga_pany_10kbwin_10kbstep_fst_slidingwindow.txt",
+                col_names=FALSE) %>% 
+  mutate(X1=as.numeric(str_remove(X1, 'Mme_chr*')), X2=X2/10^6) %>% rename(CHR=X1, Mb=X2, n=X3, fst=X4)
+
+invchr <-  c("4", "7", "8", "18", "19", "24")
+
+FSTinv <- FST %>% filter(CHR %in% invchr)  %>% 
+  mutate(CHR = factor(CHR, levels=c('4','18','7','19','8','24'))) %>% 
+  filter(!(CHR==7 & Mb < 0.75)) %>%
+  filter(!(CHR==8 & Mb < 0.4)) 
+
+# aPJ <- read_tsv("input/PANY_femF1_recombrate_renamedchr_rev.txt") %>% 
+#   mutate(map=as.numeric(str_remove(map, 'Mme_chr*'))) 
+# aJP <- read_tsv("input/JIGA_femF1_renamedchr.txt") %>% 
+#   mutate(map=as.numeric(str_remove(map, 'Mme_chr*'))) %>% 
+#   mutate(mkr=as.numeric(str_remove(mkr, 'mkr*'))) 
+# aF1 <- read_tsv("input/PAxJI_femF2_renamedchr_rev.txt") %>% 
+#   mutate(map=as.numeric(str_remove(map, 'Mme_chr*')))
+# arne <- bind_rows("GA"=aJP, "NY"=aPJ, "F1"=aF1, .id="pop") %>% rename(CHR=map)
+# sizePJ <- aPJ %>% filter(map %in% invchr) %>% group_by(map) %>% summarise(size=max(phys)-min(phys))
+# sizeNY <- females %>% filter(pop=="NY")  %>% 
+#   filter(chr %in% invchr) %>% group_by(chr) %>% summarise(length=max(start)-min(start))
+# sizeboth <- bind_cols(sizePJ,sizeNY) %>% mutate(diff=size-length)
+
+
+NYmarey <- nfemales %>%
+  filter(pop=="NY") %>% 
+  filter(CHR %in% invchr) %>% group_by(CHR) %>% arrange(CHR,gen) %>%
+  mutate(newy=(gen-min(gen))/(max(gen)-min(gen))) %>% 
+  mutate(newstart=case_when(CHR==4 ~ mb+109377, 
+                            CHR==7 ~ mb+775999, 
+                            CHR==8 ~ mb+351981, 
+                            CHR==18 ~ mb+162252, 
+                            CHR==19 ~ mb+133928, 
+                            CHR==24 ~ mb+149450, 
+                            TRUE~mb)) %>% 
+  mutate(CHR = factor(CHR, levels=c('4','18','7','19','8','24')))
+
+fst_plot<-
+  ggplot()+
+  geom_point(data=FSTinv, aes(x = Mb, y = fst), color="gray70") +
+  geom_point(data=NYmarey, aes(x = newstart/1e6, y = newy), color="black") +
+  scale_x_continuous(name = "Physical position (mb) on Georgia genome") +
+  scale_y_continuous(name = expression(paste("Differentiation (", F[ST]^"", ") between Georgia and New York")), limits = c(0,1),breaks=c(0, 0.5, 1),  
+                     sec.axis = sec_axis(~ . , labels = NULL, breaks = NULL, name = "Genetic position (cm) from New York linkage map (scaled to 1)\n")) +
+  theme_bw()+
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(), 
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),        
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA)) +
+  facet_wrap(~CHR, scales="free", nrow=3)
+fst_plot
+
+```
+
+
+#### Normalize Recombination Rates and Compare 
+
+
+```{r l3, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 7, fig.width = 8}
+library(LambertW)
+recombinv <- read_delim("input/recomb_df.txt", delim=" ")
+
+rinvGA <- recombinv %>% 
+  mutate(allinv = case_when(
+    map == 4 & mb > 12.7 & mb < 14.7 ~ "inversion",
+    map == 7 & mb > 11.8 & mb < 13.6 ~ "inversion",
+    map == 7 & mb < 0.165 ~ "inversion",
+    map == 8 & mb > 3.02 & mb < 15.5 ~"inversion",
+    map == 18 & mb > 0.895 & mb < 1.51 ~ "inversion",
+    map == 18 & mb > 1.51 & mb < 4.23 ~ "inversion",
+    map == 18 & mb > 4.23 & mb < 8.42 ~ "inversion",
+    map == 19 & mb > 2.92	& mb < 4.22 ~ "inversion",
+    map == 24 & mb > 4.15 & mb < 13.5 ~ "inversion", 
+    # map == 1 & mb > 1.61 & mb < 2.01 ~ "inversion",
+    # map == 5 & mb > 21.7 & mb < 23.2 ~ "inversion",
+    # map == 10 & mb > 1.39 & mb < 2.28 ~ "inversion",
+    # map == 12 & mb > 0.45 & mb < 1.81 ~ "inversion",
+    # map == 11 & mb > 3.85 & mb < 12.5 ~ "inversion",
+    # map == 18 & mb > 8.4 & mb < 10.2 ~ "inversion",
+    # map == 19 & mb > 4.2 & mb < 14.7 ~ "inversion",
+    # map == 19 & mb > 0.883 & mb < 2.94 ~ "inversion",
+    # map == 6 & mb > 1.74 & mb < 14.6 ~ "inversion", 
+    TRUE ~ "linear"))
+
+
+
+recombinv2 <- rinvGA %>% 
+  arrange(set,map,mb) %>% 
+  group_by(set,map) %>% 
+  mutate(group = case_when(allinv == "inversion" ~ 'Inverted',
+                           mb < quantile(mb,0.1) ~ 'Terminal', 
+                           mb > quantile(mb,0.9) ~ 'Terminal',
+                           TRUE ~ 'Co-linear'))
+
+ic <- c("8", "18", "24")
+
+
+ic1 <- c("1","5","10","12")
+ic2 <- c("4","7","8","18","24")
+ic3 <- c("3","6","11","16","19")
+
+invrr2 <- recombinv2 %>% 
+  dplyr::mutate(label=case_when(
+  map %in% ic1 ~ "All inverted",  
+  map %in% ic2 ~ "Inverted",  
+  map %in% ic3 ~ "Coldspots", 
+  TRUE ~ "Co-linear"))
+
+invrr3 <- invrr2 %>% filter(label=="Inverted" | label=="Co-linear") 
+
+newrr <- invrr3 %>% 
+  ungroup() %>% 
+  transmute(population=set, type=label, chromosome=map, region=group, rate=regDr) %>% 
+  mutate(type=recode(type,"Co-linear"="co-linear", "Inverted"="inversion"))
+
+newr3 <- newrr %>% #filter(!region=="Terminal") %>% 
+  mutate(region=if_else(type=="inversion" & region=="Co-linear", "Inv-Adjacent", region)) %>% 
+  mutate(region=if_else(type=="inversion" & region=="Inverted", "Inversion", region)) #%>%   mutate(population=as.factor(population), type=as.factor(type), chromosome=as.factor(chromosome), region=as.factor(region))
+
+newr4 <- newr3 %>% mutate(newreg=case_when(
+  type=="co-linear" & region =="Terminal" ~ "CollTerm", TRUE ~ region)) %>%
+  mutate(population=as.factor(population), region=as.factor(region))
+```
+
+
+```{r normal, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 7, fig.width = 8}
+y1 <- pull(newr4,rate)
+plot(density(y1))
+test_normality(y1)
+
+
+out <- Gaussianize(y1, type = "hh", return.tau.mat = TRUE, 
+                   verbose = TRUE, method = "MLE")
+#plot(density(out$input))
+test_normality(out$input)
+
+newx <- bind_cols(newr4,out$input) %>% rename(transrr='...7')
+#plot(density(newx$rate))
+#plot(density(newx$transrr))
+
+
+newr5 <- newx %>% filter(!population=="F1") %>% filter(!newreg=="Terminal") %>% filter(!newreg=="CollTerm")   
+```
+
+
+
+
+
+<details><summary>Show results</summary>
+<p>
+
+```{r model, echo=FALSE, fig.height=5, fig.width=10, message=FALSE, warning=FALSE}
+#compare chroms with and without inversions
+model.1 <- lmer(transrr ~  type + (1|chromosome), newr5 )  
+summary(model.1)
+anova(model.1)
+emmeans(model.1, list(pairwise ~ type), adjust = "tukey")
+
+
+#test for effects of pop and region with chr as random
+model.x <- lmer(transrr ~ population * region + (1|chromosome), newx )  
+summary(model.x)
+anova(model.x)
+emmeans(model.x, list(pairwise ~ region), adjust = "tukey")
+
+
+
+#test for effects after filtering F1
+model.2 <- lmer(rate ~ population + newreg + (1|chromosome), newr5 )  
+summary(model.2)
+anova(model.2)
+emmeans(model.2, list(pairwise ~ newreg), adjust = "tukey")
+
+
+
+model.3 <- lmer(rate ~ population * newreg * (1|chromosome), newr4)  
+summary(model.3)
+anova(model.3)
+
+
+invrr <- invrr2 %>% filter(map %in% ic2) 
+
+p12 <- ggplot(invrr3, aes(x=interaction(group,label), y=regDr, fill=factor(set))) +  
+  geom_boxplot(aes(x=interaction(group,label), y=regDr, fill=factor(set)),outlier.shape=NA, width=.5, color="black")+ 
+  scale_color_manual(values=c("goldenrod2", "red2", "blue2")) +
+  scale_fill_manual(values=c("goldenrod2", "red2", "blue2")) + 
+  annotate("text", x = 0.1, y = 27, size=8, label = "b)")+
+  annotate("text", x = c(1,2,3,4,5), y = -2, size=4.5, label = c("Central", "Terminal", "Outside", "Inverted","Terminal")) +
+  annotate("text", x = 3, y = -3.3, size=4.5, label = c("Inversion")) +
+  annotate("text", c(1.5, 4), y = 27.2, label = c("No inversions", "Inversions in NY"), size=4) +
+  geom_segment(aes(x = 0.6, y = 26.5, xend = 2.4, yend = 26.5), size=0.1)+
+  geom_segment(aes(x = 2.6, y = 26.5, xend = 5.4, yend = 26.5), size=0.1)+
+  coord_cartesian(xlim = c(1, 5), ylim = c(0, 27.4), clip = 'off') + 
+  theme_bw() +
+  theme(plot.margin = unit(c(0.5, 0.5, 1.5, 0.3), "cm"),
+        legend.position="none", 
+        panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        axis.text.y=element_text(colour="black",size=12),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y=element_text(size=13)) +
+  labs(title="", y="Recombination Rate (cm/Mb)") 
+
+
+scaff_len <- read_tsv(file = "input/anch_lengths.txt") %>% transmute(chr=chr, ymax=len/10^6)
+
+x <- nfemales %>% group_by(pop,CHR) %>%
+  summarize(maxcm=max(gen), maxmb=max(mb)/1e6) %>% mutate(rr=maxcm/maxmb) %>% left_join(scaff_len,by=c("CHR"="chr")) %>% 
+  mutate(pop = factor(pop, levels =  c("GA", "NY", "F1")))
+
+rrplot2 <- ggplot(x, aes(x=ymax, y=rr)) + 
+  scale_color_manual(values=c("red2", "blue2", "goldenrod2")) +
+  geom_smooth(aes(colour=factor(x$pop)), method = "lm", se = FALSE, size=0.5, alpha=0.5) +
+  geom_point(aes(colour=factor(x$pop)), size=6, alpha=0.5) + 
+  geom_text(aes(label=CHR),size=4) + 
+  stat_regline_equation(aes(label=paste(..eq.label..,..rr.label..,sep = "~~~~"),color=pop), label.x.npc = 0.08, label.y.npc = 0.15) +
+  annotate("text", x = 7, y = 9.5, size=8, label = "a)") +
+  coord_cartesian(xlim = c(9, 27.4), ylim = c(4.25, 9.5), clip = 'off')  +
+  theme_bw() +
+  theme(plot.margin = unit(c(0.5, 0.3, 0.5, 0.5), "cm"),
+        panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.direction = "horizontal",
+        legend.text = element_text(size=10),
+        legend.position=c(0.83,0.95),
+        legend.title = element_blank(),
+        axis.text.x=element_text(colour="black", size=12),
+        axis.text.y=element_text(colour="black", size=12),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title=element_text(size=13)) +
+  labs(title="", x="Scaffold Size (Mbp)", y ="Recombination Rate (cM/Mb)")
+
+
+newx <- x %>% mutate(pop=as.character(pop)) %>% as.data.frame()
+
+res <- cor.test(newx$ymax, newx$rr, 
+                    method = "pearson")
+res
+
+summary(lm(rr ~ ymax, data=newx))$r.squared 
+
+res.aov <- newx %>% anova_test(rr ~ ymax + pop)
+get_anova_table(res.aov)
+
+pwc <- newx %>% 
+  emmeans_test(
+    rr ~ pop, covariate = ymax,
+    p.adjust.method = "bonferroni"
+  )
+pwc
+get_emmeans(pwc)
+```
+</p>
+</details> 
+
+```{r modelplot, echo=FALSE, fig.height=5, fig.width=10.5, message=FALSE, warning=FALSE}
+grid.arrange(rrplot2, p12, nrow=1, widths=c(1.3,1))
+```
+ 
+

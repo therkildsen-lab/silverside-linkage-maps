@@ -115,7 +115,17 @@ do
   java -cp /programs/Lep-MAP3/bin/ OrderMarkers2 data=out_JP.linkage map=JPmap14.txt chromosome=$chr numThreads=20 informativeMask=2 >LG$chr 2>order$chr.err
 done
 
-#Edit output to include marker info
+for chr in $(seq 1 1 24) 
+do 
+  java -cp /programs/Lep-MAP3/bin/ OrderMarkers2 data=F2.all map=newmap.txt families=JP3 chromosome=1 grandparentPhase=1 outputPhasedData=1 numThreads=20 informativeMask=23 >LG$chr 2>order$chr.err
+done
+
+for chr in $(seq 1 1 24) 
+do 
+  java -cp /programs/Lep-MAP3/bin/ OrderMarkers2 data=out_PJ.linkage map=PJmap19.txt chromosome=1 numThreads=20 informativeMask=2 >LG$chr 2>order$chr.err
+done
+
+#Edit output to include marker info (shown for JP map only, repeat for all maps)
 
 cat out_JP.linkage|cut -f 1,2|awk '(NR>=7)' >snps.txt
 

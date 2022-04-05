@@ -1,0 +1,172 @@
+---
+title: "Tandem Repeats"
+output: github_document
+always_allow_html: true
+---
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+```
+
+
+
+```{r centromeres, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+newbed <- read_tsv("out/new.bed", col_names = c("chr","start","end", "sex", "mchr", "pos","fchr","phys")) %>% 
+  mutate(chr = as.numeric(str_remove(chr,"chr"))) %>% 
+  mutate(assembled=case_when(fchr>24 ~ "anchored", 
+                       TRUE ~ "og"))
+
+females <- newbed %>% filter(!sex=="males") %>% 
+  mutate(pop=recode(sex,GeorgiaF="GA",HybridF="F1",NewYorkF="NY")) %>% 
+  filter(!(pop=="NY" & chr==11 & phys ==10223)) %>% 
+  rename(CHR=chr) %>% 
+  mutate(newgen=case_when(pop=="NY" & CHR==19 & pos > 70 ~ pos-min(70.169), 
+                          pop=="NY" & CHR==19 & pos < 30 ~ abs(pos-25.895)+74.794, 
+                          TRUE ~ pos))
+
+nfemales <- females %>% group_by(pop,CHR) %>%
+  mutate(gen=case_when(CHR==3 | CHR==7 | CHR==18 ~ abs(newgen-max(newgen)), TRUE ~ newgen)) %>% 
+  mutate(mb=case_when(CHR==3 | CHR==7 | CHR==18 ~ abs(start-max(start)), TRUE ~ start))
+
+
+
+###
+centGA <- females %>% rename(medchr=chr)
+
+
+tanrep <- read_tsv("out/JM-2.chr.fasta.2.7.7.80.10.50.500.final.parse") 
+chrom <- rep(1:24, c(7864, 2936, 9745, 3738, 6837, 9451, 3461, 3403, 8269, 8351, 7020, 5810, 7856, 3322, 7056, 4153, 4278, 2755, 4464, 3599, 4916, 5828, 6564, 4708))
+newrep <- bind_cols("medchr"=chrom,tanrep,) %>% select(-Repeat) %>% rename(repseq='repeat')
+parsenew <- distinct(newrep, across(c(medchr, repseq)), .keep_all = TRUE)
+sanitycheck <- data.frame(cbind(table(parsenew$repseq))) %>%  rename("chromcount" = 1)
+sanitycheck$repseq <- rownames(sanitycheck)
+rownames(sanitycheck) <- c()
+sharedrepeats <- filter(sanitycheck, chromcount == 24)
+
+
+parsefilt <- parsenew %>% filter(repseq %in% sharedrepeats$repseq)
+```
+
+
+```{r positions, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 8, fig.width = 13}
+
+myreps <- parsenew %>% filter(period_size>20) %>% transmute(chr=medchr,start=rep_start/1e6,end=rep_end/1e6,size=end-start)
+
+scaff_len <- read_tsv(file = "input/anch_lengths.txt") %>% transmute(chr=chr, start=1/1e6, end=len/1e6) 
+
+myvars <- c("chr", "start", "end")
+me <- myreps[myvars]
+chr <- scaff_len[myvars]
+
+allreps <- bind_rows("Chr" = chr, "Repeats" = me, .id="groups") %>% mutate(size=(end-start)*1e6) %>% 
+  group_by(groups,chr) %>% mutate(rp=seq_along(chr))
+
+
+ggplot(allreps) +
+  geom_path(aes(x=chr, y=start, group=chr), size=11, lineend="round", col="black") +
+  geom_path(aes(x=chr, y=end, group=chr), size=11, lineend="round", col="black") +
+  geom_path(aes(x=chr, y=start, group=chr), size=10, lineend="round", col="white") +
+  geom_path(aes(x=chr, y=end, group=chr), size=10, lineend="round", col="white") +
+  geom_rect(data=subset(allreps, groups=="Repeats"), aes(xmin=chr-0.25, xmax=chr+0.25, ymin=start-0.005, ymax=end+0.005), fill="steelblue") +
+  annotate("text", x = 1:24, y = -2, label = 1:24, size = 5, color="black", fontface="bold") +
+  scale_x_continuous(breaks=seq(1,24,1)) +
+  scale_y_continuous(breaks=seq(0,30,5)) +
+  theme_classic()  +
+  theme(legend.position="none", 
+        line=element_blank(), 
+        rect=element_blank(), 
+        axis.text = element_blank(), 
+        axis.title=element_blank(),
+        plot.title = element_text(hjust = 0.05, size=17, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.15, size=14, face = "italic")) +
+  labs(title ="Tandem repeats in the silverside genome", subtitle="Repeats with pattern size ranging between 35 and 3500 bp identified with Tandem Repeats Finder (Benson 1999)")+
+  scale_y_reverse()  
+
+```
+
+
+```{r centromeres, warning=FALSE, message=FALSE, echo=FALSE, fig.height = 11, fig.width = 8}
+parsecentro <- parsefilt %>% 
+  mutate(chr=medchr) %>% 
+  mutate(AT=a_percent+t_percent, GC=g_percent+c_percent) %>% 
+  mutate(cent = case_when(
+    AT==100 ~ "AT100",
+    AT>52  ~ "AT76",
+    TRUE ~ "eq")) %>% 
+  filter(!cent=="eq")
+
+#write_tsv(parsecentro,"out/centromere.txt")
+
+parsef <- parsenew %>% 
+  mutate(map=medchr) %>% 
+  group_by(map) %>% 
+  filter(grepl('TTAGGG', repseq)) %>% ungroup()
+
+
+parsetelo <-  parsef %>%  
+  mutate(chr=map, AT=a_percent+t_percent, GC=g_percent+c_percent) %>% 
+  group_by(chr) %>% 
+  arrange(chr,rep_start) %>% 
+  mutate(ends = case_when( rep_start < 0.06*(max(rep_end)) ~ 'Terminal', 
+                           rep_start > 0.94*(max(rep_end)) ~ 'Terminal2', 
+                           TRUE ~ 'Middle')) %>% 
+  filter(!ends=="Middle") %>% filter(GC>30)
+
+mt1 <- parsetelo %>% filter(ends=="Terminal") %>% group_by(chr) %>% summarise(rep_start=max(rep_start))
+mt2 <- parsetelo %>% filter(ends=="Terminal2") %>% group_by(chr) %>% summarise(rep_start=min(rep_start))
+
+telos <- bind_rows("left"=mt1,"right"=mt2,.id = "end") 
+
+ggplot() + 
+  geom_point(data=subset(females,pop=="F1"), aes(x=start/1e6, y=pos), size=0.8, alpha=0.8, color="goldenrod2")+
+  geom_point(data=subset(females,pop=="GA"), aes(x=start/1e6, y=pos), size=0.8, alpha=0.8, color="red2")+
+  geom_point(data=subset(females,pop=="NY"), aes(x=start/1e6, y=pos), size=0.8, alpha=0.8, color="blue2")+
+  #geom_vline(data=telos,aes(xintercept=rep_start/1e6), lty = 1, lwd = 0.5)+
+  geom_vline(data=subset(parsecentro, cent=="AT100"),aes(xintercept=rep_start/1e6), color="magenta",lty = "11", lwd = 1, alpha=0.7)+
+  geom_vline(data=subset(parsecentro, cent=="AT76"),aes(xintercept=rep_start/1e6), color="green",lty = "11", lwd = 1, alpha=0.7)+
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "none",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1))) +
+  labs(title="", x="Physical Position (Mbp)", y="Genetic Position (cM)") +
+  facet_wrap(~chr, scales="free", ncol=4)
+
+renrr <- recomb_df %>% rename(chr=map)
+
+ggplot() + 
+  geom_line(data=subset(renrr,set=="GA"|set=="NY"), aes(x=mb, y=regDr, color=set), size=1, alpha=0.8) +
+  scale_color_manual(values=c("red2", "blue2")) +
+  #geom_vline(data=telos,aes(xintercept=rep_start/1e6), lty = 1, lwd = 1)+
+  geom_vline(data=subset(parsecentro, cent=="AT100"),aes(xintercept=rep_start/1e6), color="magenta",lty = "11", lwd = 1, alpha=0.7)+
+  geom_vline(data=subset(parsecentro, cent=="AT76"),aes(xintercept=rep_start/1e6), color="green",lty = "11", lwd = 1,alpha=0.7)+
+  theme_bw() +
+  theme(panel.grid.major=element_blank(), 
+        panel.grid.minor=element_blank(),
+        panel.background=element_blank(),
+        legend.position = "none",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-5,-5,-5,-5),
+        legend.title=element_blank(),
+        legend.text=element_text(size=12),
+        axis.text.x=element_text(colour="black",size=11),
+        axis.text.y=element_text(colour="black",size=11),
+        strip.text=element_text(size=12, margin = margin(0.05,0,0.05,0, "cm")),
+        strip.background = element_rect(color="black", fill=NA),
+        axis.title.x=element_text(size=13, margin=margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y=element_text(size=13, margin=margin(t = 0, r = 5, b = 0, l = 0))) +
+  guides(color=guide_legend(override.aes=list(size=5, alpha=1), reverse = TRUE)) +
+  labs(title="", x="Physical Position (Mbp)", y="Recombination Rate (cM/Mb)") +
+  facet_wrap(~chr, scales="free", ncol=4)
+```
